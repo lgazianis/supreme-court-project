@@ -1,0 +1,371 @@
+---
+title: "Data Cleaning"
+author: "Lucas Gazianis"
+date: "10/24/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(tidyverse)
+library(rstanarm)
+library(readxl)
+library(ggthemes)
+library(gt)
+library(gtsummary)
+library(broom.mixed)
+```
+
+```{r SCOTUS readin}
+
+scotus <- read.csv("raw-data/SCDB_2020_01_justiceCentered_Citation.csv")
+
+justices <- read.csv("raw-data/supreme_court_justices.csv")
+
+ideologies <- read.csv("raw-data/scores.csv")
+
+#didn't end up using ideologies data set
+
+presidents <- read.csv("raw-data/us_presidents.csv") %>%
+  select(president, party)
+
+#only relevant data we want from presidents dataset
+
+initialnames <- as.vector(scotus$justiceName) %>%
+  unique()
+
+#unique() to get rid of duplicates in each column
+
+justices$name[88] = "HHBurton"
+justices$name[86] = "RHJackson"
+justices$name[82] = "WODouglas"
+justices$name[81] = "FFrankfurter"
+justices$name[80] = "SFReed"
+justices$name[79] = "HLBlack"
+justices$name[87] = "WBRutledge"
+justices$name[83] = "FMurphy"
+justices$name[89] = "FMVinson"
+justices$name[90] = "TCClark"
+justices$name[91] = "SMinton"
+justices$name[92] = "EWarren"
+justices$name[93] = "JHarlan2"
+justices$name[94] = "WJBrennan"
+justices$name[95] = "CEWhittaker"
+justices$name[96] = "PStewart"
+justices$name[97] = "BRWhite"
+justices$name[98] = "AJGoldberg"
+justices$name[99] = "AFortas"
+justices$name[100] = "TMarshall"
+justices$name[101] = "WEBurger"
+justices$name[102] = "HABlackmun"
+justices$name[103] = "LFPowell"
+justices$name[104] = "WHRehnquist"
+justices$name[105] = "JPStevens"
+justices$name[106] = "SDOConnor"
+justices$name[108] = "AScalia"
+justices$name[109] = "AMKennedy"
+justices$name[110] = "DHSouter"
+justices$name[111] = "CThomas"
+justices$name[112] = "RBGinsburg"
+justices$name[113] = "SGBreyer"
+justices$name[114] = "JGRoberts"
+justices$name[115] = "SAAlito"
+justices$name[116] = "SSotomayor"
+justices$name[117] = "EKagan"
+justices$name[118] = "NMGorsuch"
+justices$name[119] = "BMKavanaugh"
+
+#went through each justice manually to change name for lack of a better method
+#a formula would be very difficult because not everyone had middle initials 
+
+justices <- justices[-c(107),]
+justices <- justices[-c(85),]
+justices <- justices[-c(84),]
+
+#standard data cleaning to get rid of three entries
+
+justices <- justices %>%
+  slice(79:119) %>%
+  select(name, appointed_by) %>%
+  rename(president = appointed_by,
+         justiceName = name) 
+  
+#slice to get only 38 relevant justices who exist in scotus_data full set
+
+justices_full <- left_join(justices, presidents, by = "president")
+
+#joined justices with presidents to match with who appointed them
+
+scotus_data_full <- inner_join(scotus, justices_full, by = "justiceName") %>%
+  select(caseId, term, caseName, issue, precedentAlteration,
+         majVotes, minVotes, justiceName, majority, president, 
+         party) %>%
+  distinct()
+
+#inner_join by justiceName to essentially add justices_full to scotus
+#distinct() because there were lots of repeated rows in scotus set
+
+```
+
+```{r SCOTUS data manipulation}
+
+scotus_data <- scotus_data_full %>%
+  filter((majVotes == 5 & minVotes == 4) | 
+           (majVotes == 6 & minVotes == 3) | 
+           (majVotes == 4 & minVotes == 5) | 
+           (majVotes == 4 & minVotes == 4) | 
+           (majVotes == 3 & minVotes == 3)) %>%
+  drop_na(majority) %>%
+  mutate(votercount = majVotes + minVotes) %>%
+  group_by(caseId, majority) %>%
+  mutate(votingblock = n()) %>%
+  group_by(caseId, majority, party) %>%
+  mutate(party_in_block = n()) %>%
+  mutate(other_party_in_block = party_in_block - 1) %>%
+  mutate(opposite_party_in_block = votingblock - party_in_block) %>%
+  group_by(caseId, party) %>%
+  mutate(party_count = n()) %>%
+  mutate(other_party_count = party_count - 1) %>%
+  mutate(opposite_party_count = votercount - party_count) %>%
+  mutate(opposite_pct = opposite_party_in_block/opposite_party_count)
+
+#filtered to contentious decisions - 6-3, 5-4, 4-4, 3-3
+#created additional columns with group_by and mutate to count relevant stats
+#counted the number of one's own party in their block as well as opposite
+
+justice_party_scores <- scotus_data %>%
+  group_by(justiceName) %>%
+  summarize(other_party_in_block = sum(other_party_in_block),
+         other_party_count = sum(other_party_count),
+         .groups = "drop") %>%
+  group_by(justiceName) %>%
+  summarize(party_voting_score = other_party_in_block/other_party_count,
+            .groups = "drop")
+
+#did not end up using justice_party_scores
+#This was the opposite index to the OVS, but it yielded less reliable data
+
+justice_party_analytics <- scotus_data %>%
+  group_by(justiceName) %>%
+  summarize(mean(other_party_in_block),
+            mean(other_party_count),
+            mean(opposite_party_in_block),
+            mean(opposite_party_count),
+            .groups = "drop")
+
+#purely used for analytical purposes
+#to view the numerators and denominators of different values
+
+justice_party_summary <- left_join(justice_party_scores, justices_full, by = "justiceName") %>%
+  select(-president) %>%
+  drop_na()
+
+#extension of data I did not end up using that was opposite to OVS
+
+justice_opposite_scores <- scotus_data %>%
+  group_by(justiceName) %>%
+  summarize(opposite_party_in_block = sum(opposite_party_in_block),
+         opposite_party_count = sum(opposite_party_count),
+         .groups = "drop") %>%
+  group_by(justiceName) %>%
+  summarize(opposite_voting_score = opposite_party_in_block/opposite_party_count,
+            .groups = "drop")
+
+#this is where OVS was actually calculated by group_by then summarize
+
+justice_opposite_summary <- left_join(justice_opposite_scores, justices_full, 
+                                      by = "justiceName") %>%
+  drop_na()
+
+#joined with justice and appointing president to have full scope of data
+#drop_na() because there were data points without OVS values due to other issues
+
+scotus_data_ratio <- scotus_data_full %>%
+  filter(issue %in% c(20260, 30160, 30180, 30010, 10050, 20020, 30140, 50020)) %>%
+  mutate(issue = as.character(issue),
+         precedentAlteration = as.character(precedentAlteration)) %>%
+  filter(minVotes != 0) %>%
+  group_by(caseId, term, issue, precedentAlteration) %>%
+  summarize(ratio = majVotes/minVotes, .groups = "drop") %>%
+  distinct()
+
+#calculated Decision Ratio in each case
+#filtered for hand selected issues (either contentious or not)
+#filtered for minVotes != 0 because you can't calculate a ratio with den of 0
+#distinct() to once again ensure there is no duplicate data
+
+```
+
+```{r SCOTUS regression}
+
+#simple confidence interval
+
+opposite_justice_reg <- stan_glm(data = justice_opposite_summary,
+                                 opposite_voting_score ~ party,
+                                 refresh = 0)
+
+#test regression to see what data was interesting, did not use
+
+set.seed(10)
+scotus_regression <- stan_glm(data = scotus_data_ratio,
+                              formula = ratio ~ issue + precedentAlteration,
+                              family = gaussian(),
+                              refresh = 0)
+
+scotus_ci <- posterior_interval(scotus_regression, .95)
+
+#ratio ~ issue + precedentAlteration was the final model used
+
+scotus_regression
+
+saveRDS(object = scotus_regression, file = "Supreme-Court-Ideology/regression.Rds")
+
+tbl_regression(scotus_regression, intercept = TRUE) %>%
+  as_gt() %>%
+  tab_header(title = "Regression of SCOTUS Decision Ratio",
+             subtitle = "The Effect of Issue Type and Whether a Precedent Was Set on Decision Ratio")
+
+#this is the code pasted into the app.R
+
+```
+
+```{r SCOTUS other analysis}
+
+scotus_by_issue <- scotus_data %>%
+  filter(issue %in% c(20190, 30160, 30180, 500200, 20020)) %>%
+  mutate(opposite_pct = opposite_party_in_block/opposite_party_count)
+
+#not used in the end, but another tool to select issues of note
+
+justice_opposite_scores <- scotus_data %>%
+  group_by(justiceName) %>%
+  summarize(opposite_party_in_block = sum(opposite_party_in_block),
+         opposite_party_count = sum(opposite_party_count),
+         .groups = "drop") %>%
+  group_by(justiceName) %>%
+  summarize(opposite_voting_score = opposite_party_in_block/opposite_party_count,
+            .groups = "drop")
+
+#repetitive code from before, simply preparing for graphs
+
+justice_opposite_summary <- left_join(justice_opposite_scores, justices_full, by = "justiceName") %>%
+  rename(Party = party) %>%
+  drop_na()
+
+#same comment as above
+#drop_na() again for good measure
+
+issue_model <- stan_glm(data = scotus_by_issue,
+         opposite_pct ~ issue,
+         refresh = 0)
+
+issue_model
+
+#this model was not used
+
+```
+
+```{r president graph}
+
+ovs_by_pres <- justice_opposite_summary %>%
+  group_by(president, Party) %>%
+  summarize(pres_score = mean(opposite_voting_score),
+            .groups = "drop")
+
+#data manipulation before graph
+#finding the average score for each president
+
+ovs_by_pres %>%
+  ggplot(mapping = aes(x = president, y = pres_score, fill = Party)) + 
+  geom_col(alpha = .7) + 
+  scale_fill_manual(values = c("blue", "red")) + 
+  labs(title = "Avg. Justice Opposite Voting Score (OVS) by Appointing President",
+       subtitle = "Percentage of Justices from Opposite Ideological Block Voted For",
+       x = "President Appointed",
+       y = "Average OVS Among Appointed Justices") +
+  theme_economist() +
+  theme(plot.title = element_text(size = 14),
+        axis.text = element_text(angle = 20),
+        axis.title.x = element_text(hjust = 4))
+
+#Manual adjustments to axis.title.x, plot.title, etc.
+#alpha = .7 for better look
+
+saveRDS(object = ovs_by_pres, file = "Supreme-Court-Ideology/ovs-by-pres.Rds")
+
+```
+
+```{r OVS graphs}
+
+ovs_low <- justice_opposite_summary %>%
+  mutate(CurrentStatus = if_else(justiceName %in% c("SAAlito", "CThomas",
+                                                   "NMGorsuch", "EKagan",
+                                                   "SSotomayor", "JGRoberts",
+                                                   "BMKavanaugh", 
+                                                   "SGBreyer"),
+                                "Yes", "No")) %>%
+  filter(justiceName %in% c("SAAlito", "CThomas", "NMGorsuch", "EKagan",
+                            "SSotomayor", "AScalia", "JGRoberts", 
+                            "BMKavanaugh", "RHJackson", "WHRehnquist",
+                            "WEBurger", "RBGinsburg", "SGBreyer"))
+
+#data manipulation pre-ggplot
+#this is the object stored that gets transferred to app.R
+
+ovs_low %>%
+  ggplot(mapping = aes(x = fct_reorder(justiceName, opposite_voting_score), 
+                       y = opposite_voting_score,
+                       color = Party, fill = CurrentStatus)) + geom_col() + 
+  scale_fill_manual(name = "On Current Court", values = c("pink", "orange")) + 
+  scale_color_manual(values = c("blue", "red")) + 
+  theme_excel() + 
+  theme(plot.title = element_text(face = "bold"),
+        axis.text = element_text(angle = 30)) + 
+  labs(title = "Lowest Opposite Voting Scores (OVS) for Justices",
+       subtitle = "8/9 Current Justices Among the Lowest",
+       x = "Justice",
+       y = "Opposite Voting Score")
+
+#the graph made use of angled text to appropriately spread x axis labels
+#bolded title
+
+ovs_high <- justice_opposite_summary %>%
+  mutate(CurrentStatus = if_else(justiceName %in% c("SAAlito", "CThomas",
+                                                   "NMGorsuch", "EKagan",
+                                                   "SSotomayor", "JGRoberts",
+                                                   "BMKavanaugh", 
+                                                   "SGBreyer"),
+                                "Yes", "No")) %>%
+  filter(justiceName %in% c("DHSouter", "JPStevens", "WJBrennan", "EWarren",
+                            "TCClark", "BRWhite", "FFrankfurter", 
+                            "AJGoldberg", "AFortas", "HHBlackmun",
+                            "HHBurton", "HLBlack", "CEWhittaker"))
+
+#pre-graph data manipulation
+#also stored to RDS transferred to app.R
+
+ovs_high %>%
+  ggplot(mapping = aes(x = fct_reorder(justiceName, opposite_voting_score), 
+                       y = opposite_voting_score,
+                       color = Party, fill = CurrentStatus)) + geom_col() + 
+  scale_fill_manual(name = "On Current Court", values = c("pink", "orange")) + 
+  scale_color_manual(values = c("blue", "red")) + 
+  theme_excel() + 
+  theme(plot.title = element_text(face = "bold"),
+        axis.text = element_text(angle = 30)) + 
+  labs(title = "Highest Opposite Voting Scores (OVS) for Justices",
+       subtitle = "None Currently Reside on Supreme Court",
+       x = "Justice",
+       y = "Opposite Voting Score")
+
+#same angle = 30 argument to tilt text to prevent overlap
+#essentially same graph as above
+
+saveRDS(object = ovs_low, file = "Supreme-Court-Ideology/ovs-low.Rds")
+
+saveRDS(object = ovs_high, file = "Supreme-Court-Ideology/ovs-high.Rds")
+
+#save to RDS files
+
+```
